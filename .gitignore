@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
+data/raw/
+data/cache/
+output/
+results/*.png
+results/*.json
+results/*.csv

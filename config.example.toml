@@ -1,0 +1,9 @@
+city = "Chicago"
+latitude = 41.8781
+longitude = -87.6298
+forecast_days = 1
+model = "gemma-3-4b-it"
+voice_id = "EXAVITQu4vr4xnSDxMaLk"
+max_nudge_chars = 220
+use_tabpfn = true
+careful_about_leakage = true
