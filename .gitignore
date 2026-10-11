@@ -2,6 +2,8 @@
 __pycache__/
 *.pyc
 .venv/
+frontend/node_modules/
+frontend/dist/
 .DS_Store
 data/raw/
 data/cache/

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import io
-import re
 import zipfile
 from pathlib import Path
 from xml.etree import ElementTree
@@ -54,46 +52,58 @@ def _download_divvy_zip(key: str) -> Path:
 
 
 def _extract_trip_csvs() -> list[Path]:
-    csv_paths: list[Path] = []
+    csv_paths: set[Path] = set(RAW_DIR.glob("*divvy-tripdata*.csv"))
     for zip_path in sorted(RAW_DIR.glob("*divvy-tripdata*.zip")):
         with zipfile.ZipFile(zip_path) as archive:
-            archive.extractall(RAW_DIR)
-        for csv_file in RAW_DIR.glob("*.csv"):
-            if csv_file.name.startswith("."):
-                continue
-            csv_paths.append(csv_file)
-    return csv_paths
+            for member in archive.namelist():
+                path = Path(member)
+                if path.suffix.lower() != ".csv" or path.name.startswith("."):
+                    continue
+                extracted = RAW_DIR / path.name
+                if not extracted.exists():
+                    with archive.open(member) as source, extracted.open("wb") as target:
+                        target.write(source.read())
+                csv_paths.add(extracted)
+    return sorted(csv_paths)
 
 
-def _read_real_divvy_data() -> pd.DataFrame:
-    zip_keys = _latest_divvy_zips(max_files=6)
-    for key in zip_keys:
-        _download_divvy_zip(key)
-    csv_paths = _extract_trip_csvs()
+def _aggregate_trip_csvs(csv_paths: list[Path]) -> pd.DataFrame:
     if not csv_paths:
-        return generate_synthetic_divvy_data()
+        raise RuntimeError("No Divvy trip CSVs were downloaded or found in data/raw.")
     frames = []
     for csv_path in csv_paths:
         try:
-            frame = pd.read_csv(csv_path)
-            if {"started_at", "ended_at"}.issubset(frame.columns):
-                frame = frame[["started_at", "ended_at"]].copy()
-                frame["started_at"] = pd.to_datetime(frame["started_at"], errors="coerce")
-                frame["ended_at"] = pd.to_datetime(frame["ended_at"], errors="coerce")
-                frame = frame.dropna(subset=["started_at"]).copy()
-                frame["date"] = frame["started_at"].dt.floor("D")
-                frame["hour"] = frame["started_at"].dt.hour
-                frame["activity_count"] = 1
-                frames.append(frame[["date", "hour", "activity_count"]])
-        except Exception:
+            frame = pd.read_csv(csv_path, usecols=["started_at"])
+            frame["started_at"] = pd.to_datetime(frame["started_at"], errors="coerce")
+            frame = frame.dropna(subset=["started_at"])
+            frame["date"] = frame["started_at"].dt.floor("D")
+            frame["hour"] = frame["started_at"].dt.hour
+            frame["activity_count"] = 1
+            hourly_counts = frame.groupby(["date", "hour"], as_index=False)["activity_count"].sum()
+            frames.append(hourly_counts)
+        except (ValueError, KeyError, OSError, pd.errors.ParserError) as exc:
+            print(f"Skipping unreadable Divvy file {csv_path.name}: {exc}")
             continue
     if not frames:
-        return generate_synthetic_divvy_data()
-    return pd.concat(frames, ignore_index=True)
+        raise RuntimeError("Divvy files were found, but none contained readable started_at timestamps.")
+    return pd.concat(frames, ignore_index=True).groupby(
+        ["date", "hour"], as_index=False
+    )["activity_count"].sum()
+
+
+def _read_real_divvy_data() -> pd.DataFrame:
+    zip_keys = _latest_divvy_zips(max_files=18)
+    for key in zip_keys:
+        _download_divvy_zip(key)
+    return _aggregate_trip_csvs(_extract_trip_csvs())
 
 
 def load_divvy_dataset() -> pd.DataFrame:
     try:
         return _read_real_divvy_data()
-    except Exception:
-        return generate_synthetic_divvy_data()
+    except requests.RequestException as exc:
+        cached_csvs = _extract_trip_csvs()
+        if cached_csvs:
+            print(f"Divvy download failed; using cached trip files: {exc}")
+            return _aggregate_trip_csvs(cached_csvs)
+        raise RuntimeError(f"Could not download Divvy activity data: {exc}") from exc
